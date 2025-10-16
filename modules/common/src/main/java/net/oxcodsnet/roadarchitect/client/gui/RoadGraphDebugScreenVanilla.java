@@ -29,10 +29,11 @@ public class RoadGraphDebugScreenVanilla extends Screen {
     private final Map<String, ScreenPos> screenPositions = new HashMap<>();
     private final Map<String, Integer> typeColors = new HashMap<>();
     private final Map<EdgeStorage.Status, Integer> statusColors = Map.of(
-            EdgeStorage.Status.NEW,     0xFFF2C94C,
+            EdgeStorage.Status.NEW, 0xFFF2C94C,
             EdgeStorage.Status.SUCCESS, 0xFF27AE60,
             EdgeStorage.Status.FAILURE, 0xFFAE162B
     );
+    private final Integer selectedColor = 0xFFF2C94C;
 
     private boolean dragging = false;
     private boolean firstLayout = true;
@@ -70,50 +71,96 @@ public class RoadGraphDebugScreenVanilla extends Screen {
         //this.renderBackground(ctx, mouseX, mouseY, delta); // затемнение фона
         computeLayout();
 
-        // панель + рамка
+        // panel + frame
         ctx.fill(PADDING, PADDING, width - PADDING, height - PADDING, 0xA0101010);
         ctx.drawBorder(PADDING, PADDING, width - 2 * PADDING, height - 2 * PADDING, 0xFFFFFFFF);
 
         drawGrid(ctx);
 
-        // рёбра
+        // nodes + tooltip
+        boolean hovered = false;
+        for (Node n : nodes) {
+            ScreenPos p = screenPositions.get(n.id());
+            if (p == null) continue;
+            int fill = typeColors.getOrDefault(n.type(), 0xFFFFFFFF);
+            fillCircle(ctx, p.x, p.y, RADIUS, fill);
+
+            // hovered node highlight
+            if (!hovered && dist2(p.x, p.y, mouseX, mouseY) <= RADIUS * RADIUS) {
+                TextRenderer font = MinecraftClient.getInstance().textRenderer;
+                ctx.drawTooltip(font, Text.literal(n.pos().toShortString() + " • " + n.type()), mouseX, mouseY);
+                drawCircleOutline(ctx, p.x, p.y, RADIUS + 1, selectedColor);
+                hovered = true;
+                continue;
+            }
+            drawCircleOutline(ctx, p.x, p.y, RADIUS, 0xFF000000);
+        }
+
+        // edge
         for (EdgeStorage.Edge e : edges) {
             ScreenPos a = screenPositions.get(e.nodeA());
             ScreenPos b = screenPositions.get(e.nodeB());
             if (a == null || b == null) continue;
             int col = statusColors.getOrDefault(e.status(), 0xFFFFFFFF);
             drawLine(ctx, a.x, a.y, b.x, b.y, col);
+            if (!hovered && isMouseOverEdge(e, mouseX, mouseY) != null) {
+                drawLineOutline(ctx, a.x, a.y, b.x, b.y, selectedColor);
+                hovered = true;
+                continue;
+            }
         }
 
-        // узлы + тултип
-        Node hovered = null;
-        for (Node n : nodes) {
-            ScreenPos p = screenPositions.get(n.id());
-            if (p == null) continue;
-            int fill = typeColors.getOrDefault(n.type(), 0xFFFFFFFF);
-            fillCircle(ctx, p.x, p.y, RADIUS, fill);
-            drawCircleOutline(ctx, p.x, p.y, RADIUS, 0xFF000000);
 
-            if (dist2(p.x, p.y, mouseX, mouseY) <= RADIUS * RADIUS) hovered = n;
-        }
-        if (hovered != null) {
-            TextRenderer font = MinecraftClient.getInstance().textRenderer;
-            ctx.drawTooltip(font, Text.literal(hovered.pos().toShortString() + " • " + hovered.type()), mouseX, mouseY);
-        }
 
         drawPlayerMarker(ctx);
 
-        // линейка масштаба + легенда
+        // scale bar + legend
         drawScale(ctx);
         drawLegend(ctx);
 
-        // заголовок
+        // title
         drawCenteredTitle(ctx);
 
         super.render(ctx, mouseX, mouseY, delta);
     }
 
-    @Override public boolean shouldCloseOnEsc() { return true; }
+    private EdgeStorage.Edge isMouseOverEdge(EdgeStorage.Edge e, double mouseX, double mouseY) {
+        ScreenPos a = screenPositions.get(e.nodeA());
+        ScreenPos b = screenPositions.get(e.nodeB());
+
+
+        // calculate vector from a to b
+        double dx = b.x - a.x;
+        double dy = b.y - a.y;
+        double lengthSquared = dx * dx + dy * dy;
+
+        if (lengthSquared == 0) {
+            double distX = mouseX - a.x;
+            double distY = mouseY - a.y;
+            return (distX * distX + distY * distY) <= RADIUS * RADIUS ? e : null;
+        }
+
+        // calculate parameter t for projection point
+        double t = ((mouseX - a.x) * dx + (mouseY - a.y) * dy) / lengthSquared;
+
+        t = Math.max(0, Math.min(1, t));
+
+        // calculate projection point
+        double projectionX = a.x + t * dx;
+        double projectionY = a.y + t * dy;
+
+        double distanceX = mouseX - projectionX;
+        double distanceY = mouseY - projectionY;
+        double distanceSquared = distanceX * distanceX + distanceY * distanceY;
+
+        return distanceSquared <= RADIUS * RADIUS ? e : null;
+    }
+
+
+    @Override
+    public boolean shouldCloseOnEsc() {
+        return true;
+    }
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
@@ -141,7 +188,10 @@ public class RoadGraphDebugScreenVanilla extends Screen {
 
     @Override
     public boolean mouseReleased(double mouseX, double mouseY, int button) {
-        if (button == 0 && dragging) { dragging = false; return true; }
+        if (button == 0 && dragging) {
+            dragging = false;
+            return true;
+        }
         return super.mouseReleased(mouseX, mouseY, button);
     }
 
@@ -176,16 +226,16 @@ public class RoadGraphDebugScreenVanilla extends Screen {
 
         int spacing = computeGridSpacing();
 
-        int startWX = (int)Math.floor(worldX0 / spacing) * spacing;
-        int startWZ = (int)Math.floor(worldZ0 / spacing) * spacing;
+        int startWX = (int) Math.floor(worldX0 / spacing) * spacing;
+        int startWZ = (int) Math.floor(worldZ0 / spacing) * spacing;
 
         for (int x = startWX; x <= worldX1; x += spacing) {
-            int sx = PADDING + (int)((x - worldX0) * baseScale * zoom);
+            int sx = PADDING + (int) ((x - worldX0) * baseScale * zoom);
             fillV(ctx, sx, PADDING, PADDING + h, 0x60444444);
             drawSmallLabel(ctx, String.valueOf(x), sx + 2, PADDING + 2);
         }
         for (int z = startWZ; z <= worldZ1; z += spacing) {
-            int sz = PADDING + (int)((z - worldZ0) * baseScale * zoom);
+            int sz = PADDING + (int) ((z - worldZ0) * baseScale * zoom);
             fillH(ctx, PADDING, PADDING + w, sz, 0x60444444);
             drawSmallLabel(ctx, String.valueOf(z), PADDING + 2, sz + 2);
         }
@@ -193,7 +243,7 @@ public class RoadGraphDebugScreenVanilla extends Screen {
 
     private void drawScale(DrawContext ctx) {
         int spacing = computeGridSpacing();
-        int lengthPx = (int)(spacing * baseScale * zoom);
+        int lengthPx = (int) (spacing * baseScale * zoom);
         int x = width - PADDING - lengthPx - 10;
         int y = height - PADDING - 8;
 
@@ -237,7 +287,7 @@ public class RoadGraphDebugScreenVanilla extends Screen {
         for (Node node : nodes) {
             double sx = (node.pos().getX() - minX) * baseScale * zoom + offsetX;
             double sy = (node.pos().getZ() - minZ) * baseScale * zoom + offsetY;
-            screenPositions.put(node.id(), new ScreenPos(PADDING + (int)sx, PADDING + (int)sy));
+            screenPositions.put(node.id(), new ScreenPos(PADDING + (int) sx, PADDING + (int) sy));
         }
     }
 
@@ -249,7 +299,7 @@ public class RoadGraphDebugScreenVanilla extends Screen {
             double candidate = n * pow10;
             if (candidate >= raw) return (int) candidate;
         }
-        return (int)(10 * pow10);
+        return (int) (10 * pow10);
     }
 
     private Node findClickedNode(double mouseX, double mouseY) {
@@ -281,7 +331,8 @@ public class RoadGraphDebugScreenVanilla extends Screen {
     }
 
     private static double dist2(double x1, double y1, double x2, double y2) {
-        double dx = x1 - x2, dy = y1 - y2; return dx*dx + dy*dy;
+        double dx = x1 - x2, dy = y1 - y2;
+        return dx * dx + dy * dy;
     }
 
     private void drawSmallLabel(DrawContext ctx, String s, int x, int y) {
@@ -292,12 +343,20 @@ public class RoadGraphDebugScreenVanilla extends Screen {
     // --- примитивы (без GL-шейдеров): достаточно для отладки ---
 
     private static void fillH(DrawContext ctx, int x0, int x1, int y, int argb) {
-        if (x1 < x0) { int t = x0; x0 = x1; x1 = t; }
+        if (x1 < x0) {
+            int t = x0;
+            x0 = x1;
+            x1 = t;
+        }
         ctx.fill(x0, y, x1, y + 1, argb);
     }
 
     private static void fillV(DrawContext ctx, int x, int y0, int y1, int argb) {
-        if (y1 < y0) { int t = y0; y0 = y1; y1 = t; }
+        if (y1 < y0) {
+            int t = y0;
+            y0 = y1;
+            y1 = t;
+        }
         ctx.fill(x, y0, x + 1, y1, argb);
     }
 
@@ -311,27 +370,45 @@ public class RoadGraphDebugScreenVanilla extends Screen {
             ctx.fill(x, y, x + 1, y + 1, argb);
             if (x == x1 && y == y1) break;
             int e2 = 2 * err;
-            if (e2 >= dy) { err += dy; x += sx; }
-            if (e2 <= dx) { err += dx; y += sy; }
+            if (e2 >= dy) {
+                err += dy;
+                x += sx;
+            }
+            if (e2 <= dx) {
+                err += dx;
+                y += sy;
+            }
         }
+    }
+
+    private static void drawLineOutline(DrawContext ctx, int x0, int y0, int x1, int y1, int argb) {
+        drawLine(ctx, x0 - 1, y0 - 1, x1 - 1, y1 - 1, argb);
+        drawLine(ctx, x0 + 1, y0 - 1, x1 + 1, y1 - 1, argb);
+        drawLine(ctx, x0 - 1, y0 + 1, x1 - 1, y1 + 1, argb);
+        drawLine(ctx, x0 + 1, y0 + 1, x1 + 1, y1 + 1, argb);
     }
 
     private static void fillCircle(DrawContext ctx, int cx, int cy, int r, int argb) {
         for (int dy = -r; dy <= r; dy++) {
-            int span = (int)Math.round(Math.sqrt(r * r - dy * dy));
+            int span = (int) Math.round(Math.sqrt(r * r - dy * dy));
             ctx.fill(cx - span, cy + dy, cx + span + 1, cy + dy + 1, argb);
         }
     }
 
     private static void drawCircleOutline(DrawContext ctx, int cx, int cy, int r, int argb) {
-        int x = r, y = 0; int err = 0;
+        int x = r, y = 0;
+        int err = 0;
         while (x >= y) {
             plot8(ctx, cx, cy, x, y, argb);
             y++;
-            if (err <= 0) err += 2*y + 1;
-            if (err > 0) { x--; err -= 2*x + 1; }
+            if (err <= 0) err += 2 * y + 1;
+            if (err > 0) {
+                x--;
+                err -= 2 * x + 1;
+            }
         }
     }
+
 
     private static void plot8(DrawContext ctx, int cx, int cy, int x, int y, int argb) {
         ctx.fill(cx + x, cy + y, cx + x + 1, cy + y + 1, argb);
@@ -346,27 +423,51 @@ public class RoadGraphDebugScreenVanilla extends Screen {
 
     private static int hsvToArgb(float hDeg, float s, float v) {
         float h = (hDeg % 360 + 360) % 360 / 60f;
-        int i = (int)Math.floor(h);
+        int i = (int) Math.floor(h);
         float f = h - i;
         float p = v * (1 - s);
         float q = v * (1 - s * f);
         float t = v * (1 - s * (1 - f));
-        float r=0,g=0,b=0;
+        float r = 0, g = 0, b = 0;
         switch (i) {
-            case 0 -> { r = v; g = t; b = p; }
-            case 1 -> { r = q; g = v; b = p; }
-            case 2 -> { r = p; g = v; b = t; }
-            case 3 -> { r = p; g = q; b = v; }
-            case 4 -> { r = t; g = p; b = v; }
-            case 5, -1 -> { r = v; g = p; b = q; }
+            case 0 -> {
+                r = v;
+                g = t;
+                b = p;
+            }
+            case 1 -> {
+                r = q;
+                g = v;
+                b = p;
+            }
+            case 2 -> {
+                r = p;
+                g = v;
+                b = t;
+            }
+            case 3 -> {
+                r = p;
+                g = q;
+                b = v;
+            }
+            case 4 -> {
+                r = t;
+                g = p;
+                b = v;
+            }
+            case 5, -1 -> {
+                r = v;
+                g = p;
+                b = q;
+            }
         }
         int ri = Math.round(r * 255), gi = Math.round(g * 255), bi = Math.round(b * 255);
         return (0xFF << 24) | (ri << 16) | (gi << 8) | bi;
     }
 
     private ScreenPos worldToScreen(double wx, double wz) {
-        int sx = PADDING + (int)((wx - minX) * baseScale * zoom + offsetX);
-        int sy = PADDING + (int)((wz - minZ) * baseScale * zoom + offsetY);
+        int sx = PADDING + (int) ((wx - minX) * baseScale * zoom + offsetX);
+        int sy = PADDING + (int) ((wz - minZ) * baseScale * zoom + offsetY);
         return new ScreenPos(sx, sy);
     }
 
@@ -391,11 +492,12 @@ public class RoadGraphDebugScreenVanilla extends Screen {
         // В Minecraft yaw = 0 смотрит на +Z, а положительный yaw поворачивает влево (против часовой стрелки).
         float yaw = mc.player.getYaw();
         double a = Math.toRadians(yaw) + Math.PI / 2.0;
-        int tx = p.x + (int)Math.round(Math.cos(a) * (r + 3));
-        int ty = p.y + (int)Math.round(Math.sin(a) * (r + 3));
+        int tx = p.x + (int) Math.round(Math.cos(a) * (r + 3));
+        int ty = p.y + (int) Math.round(Math.sin(a) * (r + 3));
         drawLine(ctx, p.x, p.y, tx, ty, 0xFFFFFFFF);
     }
 
 
-    private record ScreenPos(int x, int y) {}
+    private record ScreenPos(int x, int y) {
+    }
 }
